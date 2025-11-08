@@ -626,6 +626,7 @@ class WorkOrderControlView(ui.View):
 
             # 3. Update local cache & thread title
             response = requests.get(f"{self.API_BASE_URL}/workorder/{self.wo_id}")
+            response.raise_for_status()
             new_data = response.json().get("workorder", {})
 
             self.wo_data = new_data
@@ -668,17 +669,28 @@ class WorkOrderControlView(ui.View):
 
     async def cancel_work_order_confirm(self, interaction: Interaction, original_message: discord.Message) -> bool:
         try:
+            # Update backend status first to ensure all clients see the cancellation.
+            response = requests.put(f"{self.API_BASE_URL}/workorder/{self.wo_id}/cancel")
+            response.raise_for_status()
+
+            # Refresh local data from the source of truth.
+            wo_response = requests.get(f"{self.API_BASE_URL}/workorder/{self.wo_id}")
+            wo_response.raise_for_status()
+            new_data = wo_response.json().get("workorder", {})
+            if new_data:
+                self.wo_data = new_data
+                self.wo_id = self.wo_data.get("WorkOrderID", self.wo_id)
+
             await interaction.channel.edit(name=f"❌ (Cancelled) {self.wo_data.get('Title')}"[:100])
             await interaction.channel.send(f"Work order cancelled by {interaction.user.mention}.")
 
-            self.wo_data["Status"] = "Cancelled"
             embed = self.build_embed(self.wo_data)
             self.toggle_buttons(self.wo_data.get("Status"))
 
             await original_message.edit(embed=embed, view=self)
             return True
         except Exception as e:
-            await interaction.followup.send(f"Error: {e}", ephemeral=True)
+            await interaction.followup.send(f"Error cancelling work order: {e}", ephemeral=True)
             return False
 
     # --- ROW 2: IN-PROGRESS ---
