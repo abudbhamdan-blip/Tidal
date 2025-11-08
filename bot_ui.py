@@ -7,6 +7,8 @@ from typing import Optional
 
 from shared.thread_titles import format_thread_title
 
+from bot_projects import format_thread_title
+
 # --- ================================== ---
 # --- 1. PLANNING BOT UI
 # --- ================================== ---
