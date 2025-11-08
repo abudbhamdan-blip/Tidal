@@ -307,11 +307,19 @@ def get_in_progress_work_orders():
     in_progress = [w for w in all_data if w.get('Status') == 'InProgress']
     return jsonify({"status": "success", "workorders": in_progress}), 200
 
+@app.route('/workorders/active', methods=['GET'])
+def get_active_work_orders():
+    """Return work orders that are still actionable in Discord."""
+    all_data = workorders_sheet.get_all_records()
+    active_statuses = {"Open", "InProgress", "InQA", "Rework"}
+    active_wos = [w for w in all_data if w.get('Status') in active_statuses]
+    return jsonify({"status": "success", "workorders": active_wos}), 200
+
 @app.route('/workorder/<string:wo_id>/start', methods=['PUT'])
 def start_work_order(wo_id):
     data = request.json
     user_id = str(data['UserID'])
-    
+
     row_data, row_num = find_row(workorders_sheet, "WorkOrderID", wo_id)
     if not row_data:
         return jsonify({"status": "error", "message": "Work order not found"}), 404
