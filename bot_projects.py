@@ -172,14 +172,54 @@ async def update_project_titles_loop():
 @client.event
 async def on_ready():
     await client.wait_until_ready()
-    
-    # Register persistent views
-    # We pass in dummy data. The buttons will fetch real data.
-    client.add_view(ProjectControlView(api_url=API_BASE_URL, project_data={}))
-    client.add_view(WorkOrderControlView(api_url=API_BASE_URL, project_data={}, wo_data={}))
-    
+
+    # Load active projects so each persistent view is registered with its ProjectID
+    project_lookup = {}
+    try:
+        response = requests.get(f"{API_BASE_URL}/projects/active")
+        response.raise_for_status()
+        active_projects = response.json().get("projects", [])
+    except Exception as e:
+        print(f"ON_READY ERROR: Could not load active projects: {e}")
+        active_projects = []
+
+    for project in active_projects:
+        project_id = project.get("ProjectID")
+        if not project_id:
+            continue
+        project_lookup[project_id] = project
+        client.add_view(ProjectControlView(api_url=API_BASE_URL, project_data=project))
+
+    # Load actionable work orders so their persistent views have the proper IDs
+    try:
+        response = requests.get(f"{API_BASE_URL}/workorders/active")
+        response.raise_for_status()
+        active_workorders = response.json().get("workorders", [])
+    except Exception as e:
+        print(f"ON_READY ERROR: Could not load active work orders: {e}")
+        active_workorders = []
+
+    for wo in active_workorders:
+        wo_id = wo.get("WorkOrderID")
+        if not wo_id:
+            continue
+
+        project_data = project_lookup.get(wo.get("ProjectID"), {})
+        if not project_data and wo.get("ProjectID"):
+            try:
+                proj_resp = requests.get(f"{API_BASE_URL}/project/{wo.get('ProjectID')}")
+                if proj_resp.status_code == 200:
+                    project_data = proj_resp.json().get("project", {})
+                    if project_data:
+                        project_lookup[wo.get("ProjectID")] = project_data
+            except Exception as e:
+                print(f"ON_READY WARNING: Could not fetch project {wo.get('ProjectID')} for WO {wo_id}: {e}")
+                project_data = {}
+
+        client.add_view(WorkOrderControlView(api_url=API_BASE_URL, project_data=project_data, wo_data=wo))
+
     await tree.sync(guild=discord.Object(id=GUILD_ID))
-    
+
     # Start background loops
     timer_loop.start()
     update_project_titles_loop.start()
