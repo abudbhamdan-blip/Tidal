@@ -24,8 +24,8 @@ except ImportError:
 
 # --- Import UI ---
 from bot_ui import (
-    ProjectControlView, 
-    WorkOrderCreateModal, 
+    ProjectControlView,
+    WorkOrderCreateModal,
     ProjectEditModal,
     WorkOrderControlView
 )
@@ -52,6 +52,33 @@ def get_wo_id_from_thread(thread: discord.Thread) -> str:
     if not thread.topic or not thread.topic.startswith("WorkOrderID:"):
         return None
     return thread.topic.split("WorkOrderID:")[1].strip()
+
+
+project_lookup = {}
+
+
+def get_project_data(project_id: str) -> dict:
+    """Fetches project data from cache or API and updates the shared lookup."""
+    if not project_id:
+        return {}
+
+    project_id = str(project_id)
+
+    project_data = project_lookup.get(project_id)
+    if project_data:
+        return project_data
+
+    try:
+        response = requests.get(f"{API_BASE_URL}/project/{project_id}")
+        if response.status_code == 200:
+            project_data = response.json().get("project", {})
+            if project_data:
+                project_lookup[project_id] = project_data
+                return project_data
+    except Exception as e:
+        print(f"PROJECT LOOKUP ERROR: Could not fetch project {project_id}: {e}")
+
+    return {}
 
 # --- ================================== ---
 # --- TIMER & SCHEDULER LOOP
@@ -92,11 +119,18 @@ async def timer_loop():
                         continue # Skip this one
                     
                     updated_wo_data = response.json().get("workorder", {})
-                    
+
+                    project_id = updated_wo_data.get("ProjectID")
+                    if project_id:
+                        project_id = str(project_id)
+                    if not project_id and thread.parent:
+                        project_id = get_project_id_from_channel(thread.parent)
+                    project_data = get_project_data(project_id)
+
                     # 3. Re-build embed and view
                     embed = WorkOrderControlView.build_embed(updated_wo_data)
-                    view = WorkOrderControlView(api_url=API_BASE_URL, project_data={}, wo_data=updated_wo_data)
-                    
+                    view = WorkOrderControlView(api_url=API_BASE_URL, project_data=project_data, wo_data=updated_wo_data)
+
                     # 4. Edit the message
                     await msg.edit(embed=embed, view=view)
                     break # Move to next WO
@@ -150,6 +184,7 @@ async def on_ready():
     await client.wait_until_ready()
 
     # Load active projects so each persistent view is registered with its ProjectID
+    global project_lookup
     project_lookup = {}
     try:
         response = requests.get(f"{API_BASE_URL}/projects/active")
@@ -160,7 +195,7 @@ async def on_ready():
         active_projects = []
 
     for project in active_projects:
-        project_id = project.get("ProjectID")
+        project_id = str(project.get("ProjectID")) if project.get("ProjectID") else None
         if not project_id:
             continue
         project_lookup[project_id] = project
@@ -180,17 +215,10 @@ async def on_ready():
         if not wo_id:
             continue
 
-        project_data = project_lookup.get(wo.get("ProjectID"), {})
-        if not project_data and wo.get("ProjectID"):
-            try:
-                proj_resp = requests.get(f"{API_BASE_URL}/project/{wo.get('ProjectID')}")
-                if proj_resp.status_code == 200:
-                    project_data = proj_resp.json().get("project", {})
-                    if project_data:
-                        project_lookup[wo.get("ProjectID")] = project_data
-            except Exception as e:
-                print(f"ON_READY WARNING: Could not fetch project {wo.get('ProjectID')} for WO {wo_id}: {e}")
-                project_data = {}
+        project_id = str(wo.get("ProjectID")) if wo.get("ProjectID") else None
+        project_data = get_project_data(project_id)
+        if not project_data and project_id:
+            print(f"ON_READY WARNING: Project data missing for WO {wo_id} (ProjectID: {project_id}).")
 
         client.add_view(WorkOrderControlView(api_url=API_BASE_URL, project_data=project_data, wo_data=wo))
 
