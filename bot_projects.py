@@ -74,6 +74,8 @@ async def timer_loop():
     if not guild:
         return
 
+    project_cache = {}
+
     for wo_data in active_wos:
         try:
             thread_id = int(wo_data.get("ThreadID"))
@@ -95,12 +97,34 @@ async def timer_loop():
                     
                     # 3. Re-build embed and view
                     embed = WorkOrderControlView.build_embed(updated_wo_data)
-                    view = WorkOrderControlView(api_url=API_BASE_URL, project_data={}, wo_data=updated_wo_data)
-                    
+
+                    project_id = updated_wo_data.get("ProjectID")
+                    project_data = {}
+                    if project_id:
+                        project_data = project_cache.get(project_id, {})
+                        if not project_data:
+                            try:
+                                project_response = requests.get(f"{API_BASE_URL}/project/{project_id}")
+                                if project_response.status_code == 200:
+                                    project_data = project_response.json().get("project", {}) or {}
+                                    if project_data:
+                                        project_cache[project_id] = project_data
+                            except Exception as e:
+                                print(
+                                    "TIMER LOOP WARNING: Could not fetch project "
+                                    f"{project_id} for WO {updated_wo_data.get('WorkOrderID')}: {e}"
+                                )
+
+                    view = WorkOrderControlView(
+                        api_url=API_BASE_URL,
+                        project_data=project_data,
+                        wo_data=updated_wo_data
+                    )
+
                     # 4. Edit the message
                     await msg.edit(embed=embed, view=view)
                     break # Move to next WO
-                    
+
         except Exception as e:
             print(f"TIMER LOOP ERROR: Failed to update timer for WO {wo_data.get('WorkOrderID')}: {e}")
 
