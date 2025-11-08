@@ -403,9 +403,25 @@ def rework_work_order(wo_id):
     row_data, row_num = find_row(workorders_sheet, "WorkOrderID", wo_id)
     if not row_data:
         return jsonify({"status": "error", "message": "Work order not found"}), 404
-        
+
     headers = {
         "Status": "Open",
+        "InProgressUserID": "",
+        "CurrentStartTime": "",
+        "QA_SubmittedByID": ""
+    }
+    update_cells(workorders_sheet, row_num, headers)
+    return jsonify({"status": "success"}), 200
+
+@app.route('/workorder/<string:wo_id>/cancel', methods=['PUT'])
+def cancel_work_order(wo_id):
+    row_data, row_num = find_row(workorders_sheet, "WorkOrderID", wo_id)
+    if not row_data:
+        return jsonify({"status": "error", "message": "Work order not found"}), 404
+
+    _log_time(row_data, row_num)
+    headers = {
+        "Status": "Cancelled",
         "InProgressUserID": "",
         "CurrentStartTime": "",
         "QA_SubmittedByID": ""
