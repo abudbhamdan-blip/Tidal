@@ -6,6 +6,8 @@ import datetime
 import asyncio
 from discord.ext import tasks
 
+from shared.thread_titles import format_thread_title
+
 # --- Import secrets ---
 try:
     from config import (
@@ -50,32 +52,6 @@ def get_wo_id_from_thread(thread: discord.Thread) -> str:
     if not thread.topic or not thread.topic.startswith("WorkOrderID:"):
         return None
     return thread.topic.split("WorkOrderID:")[1].strip()
-
-def format_thread_title(wo_data: dict, worker: discord.Member = None) -> str:
-    """
-    Creates the thread title based on your rules.
-    - ⏱️ (@Name) (title)
-    - ✅ (HH:MM Total) (title)
-    - (HH:MM Total) (title)
-    """
-    status = wo_data.get("Status")
-    title = wo_data.get("Title", "Work Order")[:80]
-    total_sec = int(float(wo_data.get("TotalTimeSeconds", 0)))
-    hours, remainder = divmod(total_sec, 3600)
-    minutes, _ = divmod(remainder, 60)
-    total_time_str = f"{hours:02}:{minutes:02}"
-    
-    if status == "InProgress":
-        name = worker.name if worker else "Working"
-        return f"⏱️ (@{name}) {title}"
-    elif status == "Approved":
-        return f"✅ ({total_time_str}) {title}"
-    elif status == "Open" or status == "Rework":
-        return f"({total_time_str}) {title}"
-    elif status == "InQA":
-        return f"QA ➡️ ({total_time_str}) {title}"
-    else: # Cancelled, etc.
-        return f"({total_time_str}) {title}"
 
 # --- ================================== ---
 # --- TIMER & SCHEDULER LOOP
