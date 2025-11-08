@@ -101,6 +101,8 @@ async def timer_loop():
     if not guild:
         return
 
+    project_cache = {}
+
     for wo_data in active_wos:
         try:
             thread_id = int(wo_data.get("ThreadID"))
@@ -134,7 +136,7 @@ async def timer_loop():
                     # 4. Edit the message
                     await msg.edit(embed=embed, view=view)
                     break # Move to next WO
-                    
+
         except Exception as e:
             print(f"TIMER LOOP ERROR: Failed to update timer for WO {wo_data.get('WorkOrderID')}: {e}")
 
