@@ -626,6 +626,7 @@ class WorkOrderControlView(ui.View):
 
             # 3. Update local cache & thread title
             response = requests.get(f"{self.API_BASE_URL}/workorder/{self.wo_id}")
+            response.raise_for_status()
             new_data = response.json().get("workorder", {})
 
             self.wo_data = new_data
@@ -668,10 +669,19 @@ class WorkOrderControlView(ui.View):
 
     async def cancel_work_order_confirm(self, interaction: Interaction, original_message: discord.Message) -> bool:
         try:
+            requests.put(f"{self.API_BASE_URL}/workorder/{self.wo_id}/cancel").raise_for_status()
+
+            response = requests.get(f"{self.API_BASE_URL}/workorder/{self.wo_id}")
+            response.raise_for_status()
+            new_data = response.json().get("workorder", {})
+
+            # Update cached data
+            self.wo_data = {**self.wo_data, **new_data}
+            self.wo_id = self.wo_data.get("WorkOrderID", self.wo_id)
+
             await interaction.channel.edit(name=f"❌ (Cancelled) {self.wo_data.get('Title')}"[:100])
             await interaction.channel.send(f"Work order cancelled by {interaction.user.mention}.")
 
-            self.wo_data["Status"] = "Cancelled"
             embed = self.build_embed(self.wo_data)
             self.toggle_buttons(self.wo_data.get("Status"))
 
