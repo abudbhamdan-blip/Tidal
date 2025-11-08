@@ -1,0 +1,19 @@
+Python cache
+
+pycache/
+*.pyc
+
+Credentials
+
+credentials.json
+*.json
+
+Env
+
+.env*
+
+--- NEW ---
+
+Ignore the config file
+
+config.py
