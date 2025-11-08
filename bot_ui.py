@@ -469,19 +469,23 @@ class WorkOrderControlView(ui.View):
             # 2. Call API
             payload = {"UserID": str(interaction.user.id)}
             requests.put(f"{self.API_BASE_URL}/workorder/{self.wo_id}/start", json=payload).raise_for_status()
-            
-            # 3. Update Thread Title
-            new_title = f"⏱️ (@{interaction.user.name}) {self.wo_data.get('Title')}"
-            await interaction.channel.edit(name=new_title[:100])
-            
-            # 4. Update Message (will be done by loop, but we do it once for responsiveness)
+
+            # 3. Update local cache & thread title
             response = requests.get(f"{self.API_BASE_URL}/workorder/{self.wo_id}")
             new_data = response.json().get("workorder", {})
-            
-            embed = self.build_embed(new_data)
-            self.toggle_buttons(new_data.get("Status"))
+
+            self.wo_data = new_data
+            self.wo_id = self.wo_data.get("WorkOrderID", self.wo_id)
+
+            new_title = format_thread_title(self.wo_data, worker=interaction.user)
+            await interaction.channel.edit(name=new_title[:100])
+
+            # 4. Update Message (will be done by loop, but we do it once for responsiveness)
+
+            embed = self.build_embed(self.wo_data)
+            self.toggle_buttons(self.wo_data.get("Status"))
             await interaction.edit_original_response(embed=embed, view=self)
-            
+
         except Exception as e:
             await interaction.followup.send(f"Error starting task: {e}", ephemeral=True)
 
@@ -520,18 +524,21 @@ class WorkOrderControlView(ui.View):
         try:
             # 2. Call API
             requests.put(f"{self.API_BASE_URL}/workorder/{self.wo_id}/pause").raise_for_status()
-            
+
             # 3. Update Thread Title
             response = requests.get(f"{self.API_BASE_URL}/workorder/{self.wo_id}")
             new_data = response.json().get("workorder", {})
-            new_title = format_thread_title(new_data)
+            self.wo_data = new_data
+            self.wo_id = self.wo_data.get("WorkOrderID", self.wo_id)
+
+            new_title = format_thread_title(self.wo_data)
             await interaction.channel.edit(name=new_title[:100])
 
             # 4. Update Message
-            embed = self.build_embed(new_data)
-            self.toggle_buttons(new_data.get("Status"))
+            embed = self.build_embed(self.wo_data)
+            self.toggle_buttons(self.wo_data.get("Status"))
             await interaction.edit_original_response(embed=embed, view=self)
-            
+
         except Exception as e:
             await interaction.followup.send(f"Error pausing task: {e}", ephemeral=True)
 
@@ -548,21 +555,24 @@ class WorkOrderControlView(ui.View):
             # 2. Call API
             payload = {"UserID": str(interaction.user.id)}
             requests.put(f"{self.API_BASE_URL}/workorder/{self.wo_id}/finish", json=payload).raise_for_status()
-            
+
             # 3. Update Thread Title & Message
             response = requests.get(f"{self.API_BASE_URL}/workorder/{self.wo_id}")
             new_data = response.json().get("workorder", {})
-            new_title = format_thread_title(new_data)
+            self.wo_data = new_data
+            self.wo_id = self.wo_data.get("WorkOrderID", self.wo_id)
+
+            new_title = format_thread_title(self.wo_data)
             await interaction.channel.edit(name=new_title[:100])
-            
-            embed = self.build_embed(new_data)
-            self.toggle_buttons(new_data.get("Status"))
+
+            embed = self.build_embed(self.wo_data)
+            self.toggle_buttons(self.wo_data.get("Status"))
             await interaction.edit_original_response(embed=embed, view=self)
-            
+
             # 4. Ping Accountable Person
-            accountable_id = self.project_data.get("AccountableID")
+            accountable_id = self.wo_data.get("AccountableID") or self.project_data.get("AccountableID")
             await interaction.followup.send(f"<@{accountable_id}>, this work order is finished and ready for your approval.")
-            
+
         except Exception as e:
             await interaction.followup.send(f"Error finishing task: {e}", ephemeral=True)
 
@@ -579,22 +589,25 @@ class WorkOrderControlView(ui.View):
         try:
             # 2. Call API
             requests.put(f"{self.API_BASE_URL}/workorder/{self.wo_id}/approve").raise_for_status()
-            
+
             # 3. Update Thread Title & Message
             response = requests.get(f"{self.API_BASE_URL}/workorder/{self.wo_id}")
             new_data = response.json().get("workorder", {})
-            new_title = format_thread_title(new_data)
+            self.wo_data = new_data
+            self.wo_id = self.wo_data.get("WorkOrderID", self.wo_id)
+
+            new_title = format_thread_title(self.wo_data)
             await interaction.channel.edit(name=new_title[:100])
-            
-            embed = self.build_embed(new_data)
-            self.toggle_buttons(new_data.get("Status"))
+
+            embed = self.build_embed(self.wo_data)
+            self.toggle_buttons(self.wo_data.get("Status"))
             for item in self.children: item.disabled = True # Disable all
             await interaction.edit_original_response(embed=embed, view=self)
-            
+
             # 4. Post confirmation
             submitter_id = self.wo_data.get("QA_SubmittedByID")
             await interaction.followup.send(f"Work order approved! Great job <@{submitter_id}>.")
-            
+
         except Exception as e:
             await interaction.followup.send(f"Error approving task: {e}", ephemeral=True)
 
@@ -610,21 +623,24 @@ class WorkOrderControlView(ui.View):
         try:
             # 2. Call API
             requests.put(f"{self.API_BASE_URL}/workorder/{self.wo_id}/rework").raise_for_status()
-            
+
             # 3. Update Thread Title & Message
             response = requests.get(f"{self.API_BASE_URL}/workorder/{self.wo_id}")
             new_data = response.json().get("workorder", {})
-            new_title = format_thread_title(new_data)
+            self.wo_data = new_data
+            self.wo_id = self.wo_data.get("WorkOrderID", self.wo_id)
+
+            new_title = format_thread_title(self.wo_data)
             await interaction.channel.edit(name=new_title[:100])
-            
-            embed = self.build_embed(new_data)
-            self.toggle_buttons(new_data.get("Status"))
+
+            embed = self.build_embed(self.wo_data)
+            self.toggle_buttons(self.wo_data.get("Status"))
             await interaction.edit_original_response(embed=embed, view=self)
-            
+
             # 4. Post confirmation
             submitter_id = self.wo_data.get("QA_SubmittedByID")
             await interaction.followup.send(f"This work order has been sent back for rework. <@{submitter_id}>, please review.")
-            
+
         except Exception as e:
             await interaction.followup.send(f"Error sending for rework: {e}", ephemeral=True)
 
@@ -659,15 +675,18 @@ class WorkOrderEditModal(ui.Modal, title='Edit Work Order'):
             response = requests.put(f"{self.API_BASE_URL}/workorder/{self.wo_id}", json=payload)
             response.raise_for_status()
             new_data = response.json().get("workorder", {})
-            
+
+            self.wo_data = new_data
+            self.wo_id = self.wo_data.get("WorkOrderID", self.wo_id)
+
             # Edit the sticky message
-            embed = WorkOrderControlView.build_embed(new_data)
+            embed = WorkOrderControlView.build_embed(self.wo_data)
             await interaction.message.edit(embed=embed) # Assumes this is the sticky msg
-            
+
             # Edit the thread title
-            new_title = format_thread_title(new_data)
+            new_title = format_thread_title(self.wo_data)
             await interaction.channel.edit(name=new_title[:100])
-            
+
             await interaction.followup.send("Work order details updated!", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"Error updating work order: {e}", ephemeral=True)
