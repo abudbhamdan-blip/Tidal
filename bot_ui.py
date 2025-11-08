@@ -3,6 +3,7 @@ from discord import app_commands, ui, Interaction
 from discord.utils import get
 import requests
 import datetime
+import re
 
 from shared.thread_titles import format_thread_title
 
@@ -309,18 +310,35 @@ class WorkOrderCreateModal(ui.Modal, title='Create New Work Order'):
         style=discord.TextStyle.paragraph,
         placeholder="e.g., 1x 3D print in PETG, because we need to test the new ergonomics."
     )
-    pushed_user_input = ui.UserSelect(
-        placeholder="(Optional) Push to a specific user for training",
-        min_values=0,
-        max_values=1,
+    pushed_user_input = ui.TextInput(
+        label="(Optional) Push to User",
+        placeholder="Discord ID (123) or mention like <@123>. Leave blank to skip.",
         required=False
     )
 
     async def on_submit(self, interaction: Interaction):
         await interaction.response.defer(thinking=True, ephemeral=True)
-        
-        pushed_to_user = self.pushed_user_input.values[0] if self.pushed_user_input.values else None
-        
+
+        pushed_to_user_id = ""
+        if self.pushed_user_input.value:
+            raw_user_input = self.pushed_user_input.value.strip()
+            if raw_user_input:
+                mention_match = re.match(r"<@!?([0-9]+)>", raw_user_input)
+                if mention_match:
+                    pushed_to_user_id = mention_match.group(1)
+                elif raw_user_input.isdigit():
+                    pushed_to_user_id = raw_user_input
+                else:
+                    member_lookup = interaction.guild.get_member_named(raw_user_input.lstrip("@")) if interaction.guild else None
+                    if member_lookup:
+                        pushed_to_user_id = str(member_lookup.id)
+                    else:
+                        await interaction.followup.send(
+                            "Error: Could not parse the 'Push to User' field. Please enter a Discord user ID or mention.",
+                            ephemeral=True
+                        )
+                        return
+
         # 1. Create the Thread
         try:
             thread_title = f"({self.title_input.value})" # Initial title, no time
@@ -338,7 +356,7 @@ class WorkOrderCreateModal(ui.Modal, title='Create New Work Order'):
             "ThreadID": str(thread.id),
             "Title": self.title_input.value,
             "Deliverables": self.deliverables_input.value,
-            "PushedToUserID": str(pushed_to_user.id) if pushed_to_user else ""
+            "PushedToUserID": pushed_to_user_id
         }
         
         try:
