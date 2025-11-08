@@ -3,7 +3,7 @@ from discord import app_commands, ui, Interaction
 from discord.utils import get
 import requests
 import datetime
-import re
+from typing import Optional
 
 from shared.thread_titles import format_thread_title
 
@@ -17,6 +17,12 @@ class ProjectCreateModal(ui.Modal, title='Create New Project'):
         self.API_BASE_URL = api_url
         self.ACTIVE_CATEGORY_ID = active_category_id
         self.SHEET_URL = sheet_url
+
+        # Ensure dynamic defaults each time the modal is opened
+        tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+        self.due_date_input.default = tomorrow
+        self.due_date_input.placeholder = f"e.g., {tomorrow}"
+        self.kpi_input.required = False
 
     # --- Modal Fields ---
     title_input = ui.TextInput(
@@ -34,7 +40,7 @@ class ProjectCreateModal(ui.Modal, title='Create New Project'):
     )
     due_date_input = ui.TextInput(
         label="Target Due Date (YYYY-MM-DD)",
-        placeholder=f"e.g., {(datetime.date.today() + datetime.timedelta(days=30)).isoformat()}"
+        placeholder="Select a date"
     )
     accountable_input = ui.UserSelect(
         placeholder="Who is Accountable for this project?",
@@ -112,8 +118,12 @@ class ProjectCreateModal(ui.Modal, title='Create New Project'):
         # 5. Post the sticky message in the new channel
         embed = ProjectControlView.build_embed(project_data)
         view = ProjectControlView(api_url=self.API_BASE_URL, project_data=project_data)
-        await new_channel.send(embed=embed, view=view)
-        
+        message = await new_channel.send(embed=embed, view=view)
+        try:
+            await message.pin()
+        except discord.HTTPException as e:
+            print(f"UI WARNING: Could not pin project control message in {new_channel.id}: {e}")
+
         await interaction.followup.send(f"Success! Project channel created: {new_channel.mention}", ephemeral=True)
 
 
@@ -142,7 +152,8 @@ class ProjectControlView(ui.View):
             color=discord.Color.blue()
         )
         embed.add_field(name="Deliverables", value=project_data.get('Deliverables', 'N/A'), inline=False)
-        embed.add_field(name="KPI", value=project_data.get('KPI', 'N/A'), inline=False)
+        kpi_value = project_data.get('KPI') or 'N/A'
+        embed.add_field(name="KPI", value=kpi_value, inline=False)
         embed.add_field(name="Accountable", value=f"<@{project_data.get('AccountableID', 'N/A')}>", inline=True)
         embed.add_field(name="Due Date", value=project_data.get('DueDate', 'N/A'), inline=True)
         
@@ -162,11 +173,15 @@ class ProjectControlView(ui.View):
         if response.status_code != 200:
             await interaction.response.send_message("Error: Could not find project data.", ephemeral=True)
             return
-            
+
         project_data = response.json().get("project", {})
-        
-        modal = WorkOrderCreateModal(api_url=self.API_BASE_URL, project_data=project_data)
-        await interaction.response.send_modal(modal)
+
+        prompt_view = WorkOrderCreatePromptView(api_url=self.API_BASE_URL, project_data=project_data)
+        await interaction.response.send_message(
+            "Who should this work order be pushed to?",
+            ephemeral=True,
+            view=prompt_view
+        )
 
     @ui.button(label="Edit Project", style=discord.ButtonStyle.blurple, custom_id="proj_edit_base")
     async def edit_project(self, interaction: Interaction, button: ui.Button):
@@ -191,7 +206,7 @@ class ProjectControlView(ui.View):
     @ui.button(label="Finish Project", style=discord.ButtonStyle.red, custom_id="proj_finish_base")
     async def finish_project(self, interaction: Interaction, button: ui.Button):
         project_id = interaction.data["custom_id"].split(":")[-1]
-        
+
         # Only the accountable person can finish
         response = requests.get(f"{self.API_BASE_URL}/project/{project_id}")
         if response.status_code != 200:
@@ -204,36 +219,86 @@ class ProjectControlView(ui.View):
         if str(interaction.user.id) != accountable_id:
             await interaction.response.send_message(f"Only the accountable person (<@{accountable_id}>) can finish this project.", ephemeral=True)
             return
-            
-        # TODO: Add a confirmation modal "Are you sure?"
-        
-        await interaction.response.defer(thinking=True)
-        
+
+        confirm_view = ProjectFinishConfirmView(
+            control_view=self,
+            project_id=project_id,
+            project_data=project_data,
+            original_message=interaction.message
+        )
+
+        await interaction.response.send_message(
+            "Are you sure?",
+            ephemeral=True,
+            view=confirm_view
+        )
+
+    async def finish_project_confirm(
+        self,
+        interaction: Interaction,
+        project_id: str,
+        project_data: dict,
+        original_message: discord.Message
+    ) -> bool:
         try:
-            # 1. Call API to finish
             response = requests.put(f"{self.API_BASE_URL}/project/{project_id}/finish")
             response.raise_for_status()
-            
-            # 2. Move Channel
+
             from config import FINISHED_CATEGORY_ID
-            category = get(interaction.guild.categories, id=FINISHED_CATEGORY_ID)
+            category = get(original_message.guild.categories, id=FINISHED_CATEGORY_ID)
             if category:
                 finish_date = datetime.date.today().isoformat()
-                await interaction.channel.edit(
+                await original_message.channel.edit(
                     name=f"({finish_date})-{project_data.get('Title')}",
                     category=category,
                     topic=f"ProjectID: {project_id} (Finished)"
                 )
-            
-            # 3. Disable buttons
+
             for item in self.children:
                 item.disabled = True
-            await interaction.edit_original_response(view=self)
-            
-            await interaction.followup.send("Project has been marked as Finished and archived!")
-            
+            await original_message.edit(view=self)
+
+            await original_message.channel.send("Project has been marked as Finished and archived!")
+            return True
         except Exception as e:
-            await interaction.followup.send(f"An error occurred while finishing the project: {e}")
+            await interaction.followup.send(f"An error occurred while finishing the project: {e}", ephemeral=True)
+            return False
+
+class ProjectFinishConfirmView(ui.View):
+    def __init__(
+        self,
+        control_view: ProjectControlView,
+        project_id: str,
+        project_data: dict,
+        original_message: discord.Message
+    ):
+        super().__init__(timeout=60)
+        self.control_view = control_view
+        self.project_id = project_id
+        self.project_data = project_data
+        self.original_message = original_message
+
+    @ui.button(label="Yes", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: Interaction, button: ui.Button):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        success = await self.control_view.finish_project_confirm(
+            interaction,
+            self.project_id,
+            self.project_data,
+            self.original_message
+        )
+
+        if success:
+            await interaction.edit_original_response(content="Project marked as finished.", view=None)
+        else:
+            await interaction.edit_original_response(content="Could not finish the project.", view=None)
+
+        self.stop()
+
+    @ui.button(label="No", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: Interaction, button: ui.Button):
+        await interaction.response.edit_message(content="Okay, keeping the project active.", view=None)
+        self.stop()
 
 class ProjectEditModal(ui.Modal, title='Edit Project Details'):
     def __init__(self, api_url: str, project_data: dict):
@@ -295,11 +360,98 @@ class ProjectEditModal(ui.Modal, title='Edit Project Details'):
         except Exception as e:
             await interaction.followup.send(f"Error updating project: {e}", ephemeral=True)
 
-class WorkOrderCreateModal(ui.Modal, title='Create New Work Order'):
+
+class _WorkOrderPushUserSelect(ui.UserSelect):
+    def __init__(self, placeholder: str):
+        super().__init__(placeholder=placeholder, min_values=0, max_values=1)
+
+    async def callback(self, interaction: Interaction):
+        selected = self.values[0] if self.values else None
+        self.view.selected_user_id = str(selected.id) if selected else None
+        if hasattr(self.view, "explicit_change"):
+            self.view.explicit_change = True
+        await interaction.response.defer(ephemeral=True)
+
+
+class WorkOrderCreatePromptView(ui.View):
     def __init__(self, api_url: str, project_data: dict):
+        super().__init__(timeout=120)
+        self.API_BASE_URL = api_url
+        self.project_data = project_data
+        self.selected_user_id: Optional[str] = None
+
+        placeholder = "Select a user to push this work order to (optional)."
+        self.add_item(_WorkOrderPushUserSelect(placeholder=placeholder))
+
+    async def _open_modal(self, interaction: Interaction, user_id: Optional[str]):
+        modal = WorkOrderCreateModal(
+            api_url=self.API_BASE_URL,
+            project_data=self.project_data,
+            pushed_to_user_id=user_id
+        )
+        await interaction.response.send_modal(modal)
+        self.stop()
+
+    @ui.button(label="Skip", style=discord.ButtonStyle.secondary)
+    async def skip(self, interaction: Interaction, button: ui.Button):
+        await self._open_modal(interaction, None)
+
+    @ui.button(label="Continue", style=discord.ButtonStyle.green)
+    async def continue_button(self, interaction: Interaction, button: ui.Button):
+        await self._open_modal(interaction, self.selected_user_id)
+
+
+class WorkOrderEditPromptView(ui.View):
+    def __init__(self, control_view: 'WorkOrderControlView', original_message: discord.Message):
+        super().__init__(timeout=120)
+        self.control_view = control_view
+        self.original_message = original_message
+        self.selected_user_id: Optional[str] = control_view.wo_data.get("PushedToUserID") or None
+        self.explicit_change = False
+
+        if self.selected_user_id:
+            placeholder = f"Currently pushed to <@{self.selected_user_id}>. Select a user to change."
+        else:
+            placeholder = "Select a user to push this work order to (optional)."
+
+        self.add_item(_WorkOrderPushUserSelect(placeholder=placeholder))
+
+    async def _open_modal(self, interaction: Interaction, user_id: Optional[str], update_push: bool):
+        modal = WorkOrderEditModal(
+            api_url=self.control_view.API_BASE_URL,
+            wo_data=self.control_view.wo_data,
+            project_data=self.control_view.project_data,
+            control_view=self.control_view,
+            original_message=self.original_message,
+            pushed_to_user_id=user_id,
+            update_push=update_push
+        )
+        await interaction.response.send_modal(modal)
+        self.stop()
+
+    @ui.button(label="Keep Current", style=discord.ButtonStyle.secondary)
+    async def keep_current(self, interaction: Interaction, button: ui.Button):
+        await self._open_modal(interaction, self.selected_user_id, update_push=False)
+
+    @ui.button(label="Clear Assignment", style=discord.ButtonStyle.danger)
+    async def clear_assignment(self, interaction: Interaction, button: ui.Button):
+        self.selected_user_id = ""
+        self.explicit_change = True
+        await self._open_modal(interaction, "", update_push=True)
+
+    @ui.button(label="Continue", style=discord.ButtonStyle.green)
+    async def continue_button(self, interaction: Interaction, button: ui.Button):
+        if not self.explicit_change:
+            await interaction.response.send_message("Please select a user or choose 'Keep Current'.", ephemeral=True)
+            return
+        await self._open_modal(interaction, self.selected_user_id or "", update_push=True)
+
+class WorkOrderCreateModal(ui.Modal, title='Create New Work Order'):
+    def __init__(self, api_url: str, project_data: dict, pushed_to_user_id: Optional[str] = None):
         super().__init__(timeout=600)
         self.API_BASE_URL = api_url
         self.project_data = project_data
+        self.pushed_to_user_id = pushed_to_user_id or ""
 
     title_input = ui.TextInput(
         label="Work Order Title",
@@ -310,34 +462,11 @@ class WorkOrderCreateModal(ui.Modal, title='Create New Work Order'):
         style=discord.TextStyle.paragraph,
         placeholder="e.g., 1x 3D print in PETG, because we need to test the new ergonomics."
     )
-    pushed_user_input = ui.TextInput(
-        label="(Optional) Push to User",
-        placeholder="Discord ID (123) or mention like <@123>. Leave blank to skip.",
-        required=False
-    )
 
     async def on_submit(self, interaction: Interaction):
         await interaction.response.defer(thinking=True, ephemeral=True)
 
-        pushed_to_user_id = ""
-        if self.pushed_user_input.value:
-            raw_user_input = self.pushed_user_input.value.strip()
-            if raw_user_input:
-                mention_match = re.match(r"<@!?([0-9]+)>", raw_user_input)
-                if mention_match:
-                    pushed_to_user_id = mention_match.group(1)
-                elif raw_user_input.isdigit():
-                    pushed_to_user_id = raw_user_input
-                else:
-                    member_lookup = interaction.guild.get_member_named(raw_user_input.lstrip("@")) if interaction.guild else None
-                    if member_lookup:
-                        pushed_to_user_id = str(member_lookup.id)
-                    else:
-                        await interaction.followup.send(
-                            "Error: Could not parse the 'Push to User' field. Please enter a Discord user ID or mention.",
-                            ephemeral=True
-                        )
-                        return
+        pushed_to_user_id = self.pushed_to_user_id
 
         # 1. Create the Thread
         try:
@@ -378,7 +507,11 @@ class WorkOrderCreateModal(ui.Modal, title='Create New Work Order'):
         # 4. Post the sticky message in the new thread
         embed = WorkOrderControlView.build_embed(wo_data)
         view = WorkOrderControlView(api_url=self.API_BASE_URL, project_data=self.project_data, wo_data=wo_data)
-        await thread.send(embed=embed, view=view)
+        control_message = await thread.send(embed=embed, view=view)
+        try:
+            await control_message.pin()
+        except discord.HTTPException as e:
+            print(f"UI WARNING: Could not pin work order control message in thread {thread.id}: {e}")
         
         # 5. Send confirmation
         await interaction.followup.send(f"Success! Work order thread created: {thread.mention}", ephemeral=True)
@@ -413,30 +546,33 @@ class WorkOrderControlView(ui.View):
 
     def toggle_buttons(self, status: str):
         """Shows/hides buttons based on WO status."""
-        # [Start, Edit, Cancel] [Pause, Finish] [Approve, Rework]
-        show_start_row = (status == "Open")
-        show_progress_row = (status == "InProgress")
-        show_qa_row = (status == "InQA")
-        
-        # Start Row
-        self.children[0].disabled = not show_start_row
-        self.children[1].disabled = not show_start_row
-        self.children[2].disabled = not show_start_row
-        self.children[0].visible = show_start_row
-        self.children[1].visible = show_start_row
-        self.children[2].visible = show_start_row
-        
-        # Progress Row
-        self.children[3].disabled = not show_progress_row
-        self.children[4].disabled = not show_progress_row
-        self.children[3].visible = show_progress_row
-        self.children[4].visible = show_progress_row
-        
-        # QA Row
-        self.children[5].disabled = not show_qa_row
-        self.children[6].disabled = not show_qa_row
-        self.children[5].visible = show_qa_row
-        self.children[6].visible = show_qa_row
+        all_buttons = (
+            self.start_button,
+            self.edit_button,
+            self.cancel_button,
+            self.pause_button,
+            self.finish_button,
+            self.approve_button,
+            self.rework_button
+        )
+
+        for button in all_buttons:
+            button.disabled = True
+
+        self.clear_items()
+
+        if status in {"Open", "Rework"}:
+            for button in all_buttons[:3]:
+                button.disabled = False
+                self.add_item(button)
+        elif status == "InProgress":
+            for button in all_buttons[3:5]:
+                button.disabled = False
+                self.add_item(button)
+        elif status == "InQA":
+            for button in all_buttons[5:]:
+                button.disabled = False
+                self.add_item(button)
 
     @staticmethod
     def build_embed(wo_data: dict) -> discord.Embed:
@@ -510,24 +646,40 @@ class WorkOrderControlView(ui.View):
     @ui.button(label="Edit Work Order", style=discord.ButtonStyle.grey, custom_id="wo_edit_base", row=0)
     async def edit_button(self, interaction: Interaction, button: ui.Button):
         # TODO: Add permissions check (creator or accountable)
-        modal = WorkOrderEditModal(api_url=self.API_BASE_URL, wo_data=self.wo_data)
-        await interaction.response.send_modal(modal)
+        prompt_view = WorkOrderEditPromptView(control_view=self, original_message=interaction.message)
+        await interaction.response.send_message(
+            "Update the assignee before editing the work order details.",
+            ephemeral=True,
+            view=prompt_view
+        )
 
     @ui.button(label="Cancel", style=discord.ButtonStyle.red, custom_id="wo_cancel_base", row=0)
     async def cancel_button(self, interaction: Interaction, button: ui.Button):
-        # TODO: Add permissions check
-        # TODO: Add confirmation
-        await interaction.response.defer()
+        confirm_view = WorkOrderCancelConfirmView(
+            control_view=self,
+            original_message=interaction.message
+        )
+
+        await interaction.response.send_message(
+            "Are you sure?",
+            ephemeral=True,
+            view=confirm_view
+        )
+
+    async def cancel_work_order_confirm(self, interaction: Interaction, original_message: discord.Message) -> bool:
         try:
-            # API call to set status to "Cancelled"
-            # ...
             await interaction.channel.edit(name=f"❌ (Cancelled) {self.wo_data.get('Title')}"[:100])
-            await interaction.followup.send(f"Work order cancelled by {interaction.user.mention}.")
-            self.toggle_buttons("Cancelled")
-            for item in self.children: item.disabled = True
-            await interaction.edit_original_response(view=self)
+            await interaction.channel.send(f"Work order cancelled by {interaction.user.mention}.")
+
+            self.wo_data["Status"] = "Cancelled"
+            embed = self.build_embed(self.wo_data)
+            self.toggle_buttons(self.wo_data.get("Status"))
+
+            await original_message.edit(embed=embed, view=self)
+            return True
         except Exception as e:
             await interaction.followup.send(f"Error: {e}", ephemeral=True)
+            return False
 
     # --- ROW 2: IN-PROGRESS ---
     @ui.button(label="Pause", style=discord.ButtonStyle.secondary, custom_id="wo_pause_base", row=1)
@@ -662,12 +814,50 @@ class WorkOrderControlView(ui.View):
         except Exception as e:
             await interaction.followup.send(f"Error sending for rework: {e}", ephemeral=True)
 
+
+class WorkOrderCancelConfirmView(ui.View):
+    def __init__(self, control_view: WorkOrderControlView, original_message: discord.Message):
+        super().__init__(timeout=60)
+        self.control_view = control_view
+        self.original_message = original_message
+
+    @ui.button(label="Yes", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: Interaction, button: ui.Button):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        success = await self.control_view.cancel_work_order_confirm(interaction, self.original_message)
+
+        if success:
+            await interaction.edit_original_response(content="Work order cancelled.", view=None)
+        else:
+            await interaction.edit_original_response(content="Could not cancel the work order.", view=None)
+
+        self.stop()
+
+    @ui.button(label="No", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: Interaction, button: ui.Button):
+        await interaction.response.edit_message(content="Cancellation aborted.", view=None)
+        self.stop()
+
 class WorkOrderEditModal(ui.Modal, title='Edit Work Order'):
-    def __init__(self, api_url: str, wo_data: dict):
+    def __init__(
+        self,
+        api_url: str,
+        wo_data: dict,
+        project_data: dict,
+        control_view: WorkOrderControlView,
+        original_message: discord.Message,
+        pushed_to_user_id: Optional[str],
+        update_push: bool
+    ):
         super().__init__(timeout=600)
         self.API_BASE_URL = api_url
         self.wo_id = wo_data.get("WorkOrderID")
         self.wo_data = wo_data
+        self.project_data = project_data
+        self.control_view = control_view
+        self.original_message = original_message
+        self.pushed_to_user_id = pushed_to_user_id
+        self.update_push = update_push
 
         self.title_input = ui.TextInput(
             label="Work Order Title",
@@ -680,8 +870,6 @@ class WorkOrderEditModal(ui.Modal, title='Edit Work Order'):
         )
         self.add_item(self.title_input)
         self.add_item(self.deliverables_input)
-        # We can't edit the "PushedToUser" in a simple modal
-        # This will be a more advanced feature
 
     async def on_submit(self, interaction: Interaction):
         await interaction.response.defer(thinking=True, ephemeral=True)
@@ -689,21 +877,25 @@ class WorkOrderEditModal(ui.Modal, title='Edit Work Order'):
             "Title": self.title_input.value,
             "Deliverables": self.deliverables_input.value
         }
+        if self.update_push:
+            payload["PushedToUserID"] = self.pushed_to_user_id or ""
         try:
             response = requests.put(f"{self.API_BASE_URL}/workorder/{self.wo_id}", json=payload)
             response.raise_for_status()
             new_data = response.json().get("workorder", {})
 
-            self.wo_data = new_data
-            self.wo_id = self.wo_data.get("WorkOrderID", self.wo_id)
+            combined_data = dict(self.wo_data)
+            combined_data.update(new_data)
+            self.wo_data = combined_data
+            self.control_view.wo_data = combined_data
+            self.control_view.wo_id = combined_data.get("WorkOrderID", self.control_view.wo_id)
 
-            # Edit the sticky message
-            embed = WorkOrderControlView.build_embed(self.wo_data)
-            await interaction.message.edit(embed=embed) # Assumes this is the sticky msg
+            embed = WorkOrderControlView.build_embed(self.control_view.wo_data)
+            self.control_view.toggle_buttons(self.control_view.wo_data.get("Status"))
+            await self.original_message.edit(embed=embed, view=self.control_view)
 
-            # Edit the thread title
-            new_title = format_thread_title(self.wo_data)
-            await interaction.channel.edit(name=new_title[:100])
+            new_title = format_thread_title(self.control_view.wo_data)
+            await self.original_message.channel.edit(name=new_title[:100])
 
             await interaction.followup.send("Work order details updated!", ephemeral=True)
         except Exception as e:
