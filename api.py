@@ -312,7 +312,7 @@ def get_active_work_orders():
     """Return work orders that are still actionable in Discord."""
     all_data = workorders_sheet.get_all_records()
     active_statuses = {"Open", "InProgress", "InQA", "Rework"}
-    active_wos = [w for w in all_data if w.get('Status') in active_statuses]
+    active_wos = [w for w in all_data if w.get('Status') in active_statuses and w.get('Status') != 'Cancelled']
     return jsonify({"status": "success", "workorders": active_wos}), 200
 
 @app.route('/workorder/<string:wo_id>/start', methods=['PUT'])
@@ -361,16 +361,34 @@ def pause_work_order(wo_id):
     row_data, row_num = find_row(workorders_sheet, "WorkOrderID", wo_id)
     if not row_data:
         return jsonify({"status": "error", "message": "Work order not found"}), 404
-        
+
     _log_time(row_data, row_num) # Log time and clear user
     update_cells(workorders_sheet, row_num, {"Status": "Open"})
     return jsonify({"status": "success"}), 200
+
+@app.route('/workorder/<string:wo_id>/cancel', methods=['PUT'])
+def cancel_work_order(wo_id):
+    row_data, row_num = find_row(workorders_sheet, "WorkOrderID", wo_id)
+    if not row_data:
+        return jsonify({"status": "error", "message": "Work order not found"}), 404
+
+    _log_time(row_data, row_num)
+    headers = {
+        "Status": "Cancelled",
+        "InProgressUserID": "",
+        "CurrentStartTime": "",
+        "QA_SubmittedByID": ""
+    }
+    update_cells(workorders_sheet, row_num, headers)
+
+    updated_data, _ = find_row(workorders_sheet, "WorkOrderID", wo_id)
+    return jsonify({"status": "success", "workorder": updated_data}), 200
 
 @app.route('/workorder/<string:wo_id>/finish', methods=['PUT'])
 def finish_work_order(wo_id):
     data = request.json
     user_id = str(data['UserID']) # This is the user who hit "Finish"
-    
+
     row_data, row_num = find_row(workorders_sheet, "WorkOrderID", wo_id)
     if not row_data:
         return jsonify({"status": "error", "message": "Work order not found"}), 404

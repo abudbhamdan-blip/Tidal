@@ -626,6 +626,7 @@ class WorkOrderControlView(ui.View):
 
             # 3. Update local cache & thread title
             response = requests.get(f"{self.API_BASE_URL}/workorder/{self.wo_id}")
+            response.raise_for_status()
             new_data = response.json().get("workorder", {})
 
             self.wo_data = new_data
