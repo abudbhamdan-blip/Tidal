@@ -4,6 +4,8 @@ from discord.utils import get
 import requests
 import datetime
 
+from bot_projects import format_thread_title
+
 # --- ================================== ---
 # --- 1. PLANNING BOT UI
 # --- ================================== ---
